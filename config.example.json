@@ -1,0 +1,13 @@
+{
+  "token": "REPLACE_ME",
+  "host": "127.0.0.1",
+  "port": 8787,
+  "default_timeout_seconds": 600,
+  "workdir": null,
+  "allowed_commands": {
+    "codex": {
+      "argv": ["codex", "exec"],
+      "timeout_seconds": 900
+    }
+  }
+}
