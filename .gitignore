@@ -1,0 +1,7 @@
+# Never commit your real config — it contains the API token.
+config.json
+
+__pycache__/
+*.pyc
+.venv/
+venv/
