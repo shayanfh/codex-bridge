@@ -2,12 +2,16 @@
   "token": "REPLACE_ME",
   "host": "127.0.0.1",
   "port": 8787,
-  "default_timeout_seconds": 600,
+  "default_timeout_seconds": 300,
+  "max_timeout_seconds": 900,
+  "output_limit_chars": 64000,
+  "max_prompt_chars": 16000,
   "workdir": null,
+  "env_passthrough": [],
   "allowed_commands": {
     "codex": {
-      "argv": ["codex", "exec"],
-      "timeout_seconds": 900
+      "argv": ["codex", "exec", "--sandbox", "read-only"],
+      "timeout_seconds": 600
     }
   }
 }
