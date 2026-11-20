@@ -5,18 +5,37 @@ online assistant) send a prompt to your machine, run it through the
 [Codex CLI](https://github.com/openai/codex), and get the output back.
 
 ```
-remote client ──HTTPS──▶ tunnel (cloudflared/ngrok) ──▶ codex-bridge ──▶ codex exec "<prompt>"
-                  bearer token required on every request        localhost only, no shell
+remote client ──HTTPS──▶ tunnel (cloudflared/ngrok) ──▶ codex-bridge ──▶ codex exec --sandbox read-only   (prompt on stdin)
+                  bearer token required on every request        localhost only, no shell, scrubbed env
 ```
+
+> **⚠️ Do not expose this publicly until you have reviewed what it does.**
+> Whoever can reach the server with the token can run Codex on your machine.
+> Read the security model below, keep the bind address on `127.0.0.1`, and
+> treat the tunnel URL + token as full access to this computer. Prefer a
+> tunnel you can take down quickly, and take it down when you're not using it.
 
 ## Security model
 
 - **Bearer token on every endpoint.** No token, no response — not even `/health`.
-- **Command allowlist, no open shell.** Only commands you list in
-  `config.json` can run. Your prompt is passed to the CLI as a single argument;
-  nothing is ever executed through a shell.
-- **Localhost only.** The server binds to `127.0.0.1`. The tunnel is the only
-  public surface, and it still requires the token.
+- **Command allowlist, no open shell.** Only commands you list in `config.json`
+  can run. The argv is executed exactly as written — the prompt is **never
+  appended to the argument list**. It is delivered to the process on **stdin**,
+  so a prompt starting with `--` (or containing anything else) can never be
+  parsed as a CLI option. Nothing ever goes through a shell.
+- **Read-only sandbox is mandatory.** Any allowlisted entry that runs `codex`
+  must include an explicit `--sandbox read-only`. The server refuses to start
+  without it, so Codex cannot modify files outside what the sandbox allows.
+- **Fixed, dedicated working directory.** Every run executes in `workdir`
+  (default: a `bridge-workspace/` folder created next to `app.py`) — never in
+  the caller's or the server's launch directory.
+- **Scrubbed environment.** Runs get only `HOME`, `PATH`, `LANG`/`LC_ALL` and
+  `TMPDIR`. API keys and other secrets in your shell environment are **not**
+  passed through unless you name them in `env_passthrough`.
+- **Capped output and runtime.** stdout/stderr are truncated at
+  `output_limit_chars` (with a `truncated` flag in the response) and the
+  process is killed at the timeout (`default_timeout_seconds`, clamped to
+  `max_timeout_seconds`). Prompts over `max_prompt_chars` are rejected.
 - **Your real config is git-ignored.** `config.json` (which holds the token)
   is never committed.
 
@@ -28,8 +47,11 @@ remote client ──HTTPS──▶ tunnel (cloudflared/ngrok) ──▶ codex-br
    npm install -g @openai/codex
    codex login
    ```
-   The bridge runs `codex exec "<prompt>"` (non-interactive mode), which uses
-   the CLI's existing sign-in.
+   The bridge runs `codex exec --sandbox read-only` (non-interactive mode) and
+   pipes your prompt to it on stdin, which Codex reads as the task.
+   If your Codex setup authenticates through an environment variable instead
+   of `codex login` (for example `OPENAI_API_KEY`), add that variable name to
+   `env_passthrough` in `config.json` — nothing is forwarded by default.
 
 ## Setup
 
@@ -57,7 +79,7 @@ python app.py
 
 It listens on `http://127.0.0.1:8787` (change host/port in `config.json`).
 
-## Expose it (HTTPS via tunnel)
+## Expose it (HTTPS via tunnel) — only after reviewing the warning above
 
 Pick one:
 
@@ -71,7 +93,7 @@ ngrok http 8787
 
 Both print a public `https://…` URL. That URL plus your token is what you hand
 to the remote client. Keep both private — anyone with them can run Codex on
-your machine.
+your machine. Shut the tunnel down when you're done.
 
 ## API
 
@@ -88,7 +110,7 @@ curl -H "Authorization: Bearer $TOKEN" https://your-tunnel-url/health
 curl -X POST https://your-tunnel-url/run \
   -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"prompt": "explain what this repo does"}'
+  -d '{"prompt": "explain what this workspace contains"}'
 ```
 
 Response:
@@ -98,6 +120,8 @@ Response:
   "exit_code": 0,
   "stdout": "…final Codex answer…",
   "stderr": "…progress log…",
+  "stdout_truncated": false,
+  "stderr_truncated": false,
   "duration_seconds": 12.34
 }
 ```
@@ -108,20 +132,25 @@ Response:
 | --- | --- |
 | `token` | Shared secret. Required, min 32 chars. |
 | `host` / `port` | Bind address. Keep `127.0.0.1`. |
-| `default_timeout_seconds` | Fallback per-run timeout (default 600). |
-| `workdir` | Optional fixed working directory for the CLI (`null` = wherever the server runs). |
-| `allowed_commands` | The only runnable commands. Each maps to a fixed argv prefix; the prompt is appended as one argument. |
+| `default_timeout_seconds` | Fallback per-run timeout (default 300). |
+| `max_timeout_seconds` | Hard ceiling every timeout is clamped to (default 900). |
+| `output_limit_chars` | stdout/stderr are truncated to this many chars each (default 64000). |
+| `max_prompt_chars` | Prompts longer than this are rejected (default 16000). |
+| `workdir` | Fixed working directory for every run. `null` = a `bridge-workspace/` folder next to `app.py`, created automatically. |
+| `env_passthrough` | Names of environment variables allowed to reach the process. Empty = scrubbed minimal env only. |
+| `allowed_commands` | The only runnable commands. Each is a fixed argv executed exactly as written; the prompt goes on stdin. |
 
-Want Codex flags (for example a sandbox mode)? Add them to the argv prefix:
+Want different Codex flags? Edit the argv prefix — but any `codex` entry must
+keep `--sandbox read-only` or the server will not start:
 
 ```json
-"codex": { "argv": ["codex", "exec", "--sandbox", "read-only"], "timeout_seconds": 900 }
+"codex": { "argv": ["codex", "exec", "--sandbox", "read-only"], "timeout_seconds": 600 }
 ```
 
 ## Notes
 
 - `codex exec` prints progress to `stderr` and the final answer to `stdout` —
-  the API returns both, separately.
-- Long tasks: raise `timeout_seconds` in the allowlist entry rather than
-  retrying.
+  the API returns both, separately, each with a `truncated` flag.
+- Long tasks: raise `timeout_seconds` in the allowlist entry (up to
+  `max_timeout_seconds`) rather than retrying.
 - Rotate the token any time by editing `config.json` and restarting.
