@@ -1,6 +1,9 @@
 # Never commit your real config — it contains the API token.
 config.json
 
+# Local run state.
+bridge-workspace/
+
 __pycache__/
 *.pyc
 .venv/
